@@ -1,0 +1,9 @@
+CREATE DATABASE IF NOT EXISTS respondepro CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE respondepro;
+
+CREATE TABLE IF NOT EXISTS consultas (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    mensaje TEXT NOT NULL,
+    categoria VARCHAR(50) NOT NULL,
+    fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
