@@ -104,10 +104,21 @@ const requestAnalysis = async (category = '') => {
             })
         });
 
-        const result = await response.json();
+        const rawResponse = await response.text();
+        let result;
+
+        try {
+            result = JSON.parse(rawResponse);
+        } catch (parseError) {
+            throw new Error('El servidor devolvio HTML o una respuesta invalida en lugar de JSON. Revisa la configuracion de PHP/MySQL y vuelve a intentar.');
+        }
 
         if (!response.ok || !result.success) {
-            throw new Error(result.message || 'Ocurrio un error al procesar la solicitud.');
+            const detailedMessage = result.error
+                ? `${result.message} Detalle: ${result.error}`
+                : (result.message || 'Ocurrio un error al procesar la solicitud.');
+
+            throw new Error(detailedMessage);
         }
 
         renderResult(result.data);

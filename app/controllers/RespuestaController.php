@@ -99,7 +99,7 @@ class RespuestaController
             echo json_encode([
                 'success' => false,
                 'message' => 'No fue posible procesar la solicitud.',
-                'error' => $exception->getMessage(),
+                'error' => $this->normalizarMensajeError($exception),
             ], JSON_UNESCAPED_UNICODE);
         }
     }
@@ -127,8 +127,23 @@ class RespuestaController
 
     private function consultarIA(string $mensaje, string $categoriaElegida): array
     {
+        if (!function_exists('curl_init')) {
+            return $this->analisisLocal($mensaje, $categoriaElegida);
+        }
+
+        $provider = strtolower(trim((string) ($this->config['ai_provider'] ?? 'openai')));
+
+        if ($provider === 'gemini') {
+            return $this->consultarGemini($mensaje, $categoriaElegida);
+        }
+
+        return $this->consultarOpenAI($mensaje, $categoriaElegida);
+    }
+
+    private function consultarOpenAI(string $mensaje, string $categoriaElegida): array
+    {
         $apiKey = $this->config['openai']['key'];
-        if ($apiKey === '' || !function_exists('curl_init')) {
+        if ($apiKey === '') {
             return $this->analisisLocal($mensaje, $categoriaElegida);
         }
 
@@ -172,7 +187,19 @@ class RespuestaController
         }
 
         if ($statusCode < 200 || $statusCode >= 300) {
-            throw new RuntimeException('La API de IA devolvio un estado no valido: ' . $statusCode);
+            $decodedError = json_decode($response, true);
+            $apiErrorMessage = trim((string) ($decodedError['error']['message'] ?? ''));
+            $apiErrorType = trim((string) ($decodedError['error']['type'] ?? ''));
+            $apiErrorCode = trim((string) ($decodedError['error']['code'] ?? ''));
+
+            $parts = array_filter([
+                'La API de IA devolvio un estado no valido: ' . $statusCode,
+                $apiErrorType !== '' ? 'type=' . $apiErrorType : '',
+                $apiErrorCode !== '' ? 'code=' . $apiErrorCode : '',
+                $apiErrorMessage !== '' ? 'message=' . $apiErrorMessage : '',
+            ]);
+
+            throw new RuntimeException(implode(' | ', $parts));
         }
 
         $decoded = json_decode($response, true);
@@ -181,6 +208,85 @@ class RespuestaController
 
         if (!is_array($parsed)) {
             throw new RuntimeException('No se pudo interpretar la respuesta de la IA.');
+        }
+
+        return $parsed;
+    }
+
+    private function consultarGemini(string $mensaje, string $categoriaElegida): array
+    {
+        $apiKey = $this->config['gemini']['key'];
+        if ($apiKey === '') {
+            return $this->analisisLocal($mensaje, $categoriaElegida);
+        }
+
+        $prompt = $this->crearPrompt($mensaje, $categoriaElegida);
+        $endpoint = sprintf($this->config['gemini']['url'], rawurlencode($this->config['gemini']['model']));
+        $payload = [
+            'system_instruction' => [
+                'parts' => [
+                    [
+                        'text' => 'Eres un asistente comercial. Responde siempre con JSON valido.',
+                    ],
+                ],
+            ],
+            'contents' => [
+                [
+                    'parts' => [
+                        [
+                            'text' => $prompt,
+                        ],
+                    ],
+                ],
+            ],
+            'generationConfig' => [
+                'temperature' => 0.7,
+                'responseMimeType' => 'application/json',
+            ],
+        ];
+
+        $ch = curl_init($endpoint);
+
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'x-goog-api-key: ' . $apiKey,
+            ],
+            CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+            CURLOPT_TIMEOUT => $this->config['gemini']['timeout'],
+        ]);
+
+        $response = curl_exec($ch);
+        $curlError = curl_error($ch);
+        $statusCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($response === false || $curlError !== '') {
+            return $this->analisisLocal($mensaje, $categoriaElegida);
+        }
+
+        if ($statusCode < 200 || $statusCode >= 300) {
+            $decodedError = json_decode($response, true);
+            $apiErrorMessage = trim((string) ($decodedError['error']['message'] ?? ''));
+            $apiErrorStatus = trim((string) ($decodedError['error']['status'] ?? ''));
+
+            $parts = array_filter([
+                'Gemini devolvio un estado no valido: ' . $statusCode,
+                $apiErrorStatus !== '' ? 'status=' . $apiErrorStatus : '',
+                $apiErrorMessage !== '' ? 'message=' . $apiErrorMessage : '',
+            ]);
+
+            throw new RuntimeException(implode(' | ', $parts));
+        }
+
+        $decoded = json_decode($response, true);
+        $content = $decoded['candidates'][0]['content']['parts'][0]['text'] ?? '';
+        $parsed = json_decode((string) $content, true);
+
+        if (!is_array($parsed)) {
+            throw new RuntimeException('No se pudo interpretar la respuesta JSON de Gemini.');
         }
 
         return $parsed;
@@ -320,5 +426,36 @@ PROMPT;
         $permitidas = ['ventas', 'emocional', 'redes'];
 
         return in_array($categoria, $permitidas, true) ? $categoria : '';
+    }
+
+    private function normalizarMensajeError(Throwable $exception): string
+    {
+        $message = trim($exception->getMessage());
+
+        if ($message === '') {
+            return 'Error interno no identificado.';
+        }
+
+        if (str_contains($message, 'estado no valido: 401')) {
+            return 'OpenAI rechazo la API key con error 401. Revisa OPENAI_API_KEY en el archivo .env.';
+        }
+
+        if (str_contains($message, 'estado no valido: 429')) {
+            return 'OpenAI devolvio error 429. ' . $message;
+        }
+
+        if (str_contains($message, 'Gemini devolvio un estado no valido')) {
+            return $message;
+        }
+
+        if (str_contains($message, 'respuesta JSON de Gemini')) {
+            return 'Gemini respondio, pero no en el formato JSON esperado por la app.';
+        }
+
+        if (str_contains($message, 'No se pudo interpretar la respuesta de la IA')) {
+            return 'La respuesta de OpenAI no llego en el formato JSON esperado.';
+        }
+
+        return $message;
     }
 }

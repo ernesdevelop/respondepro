@@ -6,6 +6,7 @@ $pageTitle = 'RespondePro';
 $appConfig = require dirname(__DIR__, 3) . '/config/app.php';
 $detectedBaseUrl = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/');
 $baseUrl = $appConfig['base_url'] !== '' ? $appConfig['base_url'] : ($detectedBaseUrl === '/' ? '' : $detectedBaseUrl);
+$scriptUrl = ($baseUrl !== '' ? $baseUrl : '') . '/index.php';
 $publicAsset = static function (string $path) use ($baseUrl): string {
     return ($baseUrl !== '' ? $baseUrl : '') . '/' . ltrim($path, '/');
 };
@@ -114,7 +115,7 @@ require dirname(__DIR__) . '/layouts/header.php';
 
 <script>
     window.RespondePro = {
-        analyzeUrl: '<?= htmlspecialchars(($baseUrl !== '' ? $baseUrl : '') . '/analizar', ENT_QUOTES, 'UTF-8'); ?>'
+        analyzeUrl: '<?= htmlspecialchars($scriptUrl . '?route=/analizar', ENT_QUOTES, 'UTF-8'); ?>'
     };
 </script>
 <script src="<?= htmlspecialchars($publicAsset('assets/js/app.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
